@@ -1,10 +1,16 @@
+libmogilefs-client-async-perl (0.016) lucid; urgency=low
+
+  * New upstream version.
+
+ -- Dave Lambley <davel@state51.co.uk>  Wed, 01 Feb 2012 19:06:58 +0000
+
 libmogilefs-client-async-perl (0.015) lucid; urgency=low
 
   * New upstream version.
 
  -- Dave Lambley <davel@state51.co.uk>  Wed, 04 Jan 2012 15:46:13 +0000
 
-libmogilefs-client-async-perl (0.14) lucid; urgency=low
+libmogilefs-client-async-perl (0.014) lucid; urgency=low
 
   * New upstream version.
 
