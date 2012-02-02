@@ -40,6 +40,9 @@ my $callback = $mogc->store_file_from_fh($key, 'rip', $read_fh, $exp_len, {});
 
 isa_ok($callback, 'CODE');
 
+$callback->(0, 0);
+$callback->(1, 0);
+$callback->(2, 0);
 $callback->($exp_len, 0);
 $callback->($exp_len, 1);
 

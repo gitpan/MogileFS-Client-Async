@@ -31,4 +31,4 @@ requires:
   namespace::clean: 0
 resources:
   repository: git://github.com/davel/MogileFS-Client-Async.git
-version: 0.016
+version: 0.017
