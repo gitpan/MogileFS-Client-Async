@@ -28,7 +28,7 @@ MogileFS::Client::CallbackFile
 
     open(my $read_fh, "<", "...") or die ...
     my $eventual_length = -s $read_fh;
-    my $f = $mogfs->store_file_from_fh($class, $read_fh, $eventual_length, \%opts);
+    my $f = $mogfs->store_file_from_fh($key, $class, $read_fh, $eventual_length, \%opts);
 
     $f->($eventual_length, 0);
 
@@ -56,7 +56,7 @@ sub store_file_from_fh {
     my $self = shift;
     return undef if $self->{readonly};
 
-    my ($key, $class, $read_fh, $eventual_length, $opts) = @_;
+    my ($_key, $class, $read_fh, $eventual_length, $opts) = @_;
     $opts ||= {};
 
     # Hint to Linux that doubling readahead will probably pay off.
@@ -69,12 +69,17 @@ sub store_file_from_fh {
     my $create_close_args = $opts->{create_close_args} || {};
 
     my @dests;  # ( [devid,path,fid], [devid,path,fid], ... )
+
+    my $key;
+
     my $get_new_dest = sub {
         if (@dests) {
             return pop @dests;
         }
 
         foreach (1..5) {
+            $key = ref($_key) eq 'CODE' ? $_key->() : $_key;
+
             $self->run_hook('store_file_start', $self, $key, $class, $opts);
             $self->run_hook('new_file_start', $self, $key, $class, $opts);
 
@@ -97,7 +102,14 @@ sub store_file_from_fh {
                 warn "Mogile backend failed: $_";
             };
 
-            next unless $res;
+            unless ($res) {
+                # Attempting to connect to the Mogile backend completely failed
+                # let's sleep for a second to see if the problem clears.  We
+                # don't sleep for other errors as we'll arrive back here if the
+                # network fails eventually.
+                sleep 1;
+                next;
+            }
 
             for my $i (1..$res->{dev_count}) {
                 push @dests, {
@@ -191,6 +203,7 @@ sub store_file_from_fh {
             }
 
             if ($socket && $eof) {
+                die "File is longer than initially declared, is it still being written to? We are at $last_written_point, $eventual_length initially declared" if ($last_written_point > $eventual_length);
                 die "Cannot be at eof, only $last_written_point out of $eventual_length written!" unless ($last_written_point == $eventual_length);
 
                 $self->run_hook('new_file_end', $self, $key, $class, $opts);
@@ -210,6 +223,7 @@ sub store_file_from_fh {
                     $opts->{on_http_done}->() if $opts->{http_done};
 
                     try {
+                        # XXX - What's the timeout here.
                         my $probe_length = (head($current_dest->{path}))[1];
                         die "probe failed: $probe_length vs $eventual_length" if $probe_length != $eventual_length;
                     }
