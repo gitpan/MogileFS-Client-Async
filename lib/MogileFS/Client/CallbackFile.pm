@@ -137,7 +137,7 @@ sub store_file_from_fh {
     my $current_dest;
 
     return sub {
-        my ($available_to_read, $eof) = @_;
+        my ($available_to_read, $eof, $checksum) = @_;
 
         my $last_error;
 
@@ -254,6 +254,10 @@ sub store_file_from_fh {
                                 size   => $eventual_length,
                                 key    => $key,
                                 path   => $current_dest->{path},
+                                $checksum ? (
+                                    checksum => $checksum,
+                                    checksumverify => 1,
+                                ) : (),
                             });
                     }
                     catch {
@@ -268,6 +272,12 @@ sub store_file_from_fh {
                         return $eventual_length;
                     }
                     else {
+                        # create_close may explode due to a back checksum,
+                        # or a network error sending the acknowledgement of
+                        # a successfuly upload.  To handle this. if
+                        # create_close fails we always retry with a new
+                        # create_open to get a new FID.
+                        @dests = ();
                         $fail_write_attempt->("create_close failed");
                     }
                 }
