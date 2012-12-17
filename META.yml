@@ -2,7 +2,12 @@
 abstract: ~
 author: ~
 build_requires:
+  Data::Dumper: 0
+  Digest::MD5: 0
+  Digest::SHA1: 0
   ExtUtils::MakeMaker: 6.42
+  File::Temp: 0
+  Test::Exception: 0.31
   Test::More: 0.88
 configure_requires:
   ExtUtils::MakeMaker: 6.42
@@ -31,4 +36,4 @@ requires:
   namespace::clean: 0
 resources:
   repository: git://github.com/davel/MogileFS-Client-Async.git
-version: 0.022
+version: 0.023
