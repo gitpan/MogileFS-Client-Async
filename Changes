@@ -1,3 +1,10 @@
+0.026
+  - Code clean ups.
+  - Handle uploading large files on 32 bit machines.
+  - Handle uploading large files on 64 bit machines.
+  - Handle timeouts caused by waiting for large files to be checksummed.
+  - Remove the old Callback code, now disused.
+
 0.025
   - Retag correctly.
 

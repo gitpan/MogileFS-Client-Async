@@ -2,7 +2,7 @@ package MogileFS::Client::CallbackFile;
 use strict;
 use warnings;
 use URI;
-use Carp qw/confess/;
+use Carp;
 use IO::Socket::INET;
 use File::Slurp qw/ slurp /;
 use Try::Tiny;
@@ -100,6 +100,7 @@ sub store_file_from_fh {
             }
             catch {
                 warn "Mogile backend failed: $_";
+                $self->{backend}->force_disconnect() if $self->{backend}->can('force_disconnect');
             };
 
             unless ($res) {
@@ -135,6 +136,7 @@ sub store_file_from_fh {
 
     # The pointing to the arrayref we're currently writing to.
     my $current_dest;
+    my $create_close_timed_out;
 
     return sub {
         my ($available_to_read, $eof, $checksum) = @_;
@@ -169,7 +171,6 @@ sub store_file_from_fh {
                 sysseek($read_fh, 0, 0) or die "seek failed: $!";
                 try {
                     $last_written_point = 0;
-                    $last_written_point = 0;
                     $current_dest = $get_new_dest->();
 
                     $opts->{on_new_attempt}->($current_dest) if $opts->{on_new_attempt};
@@ -197,18 +198,27 @@ sub store_file_from_fh {
             # Write as much data as we have
             if ($socket) {
                 my $bytes_to_write = $available_to_read - $last_written_point;
+                my $block_size = $bytes_to_write;
 
-                if ($bytes_to_write > 0) {
-                    my $c = syssendfile($socket, $read_fh, $bytes_to_write);
-                    if ($c == $bytes_to_write) {
+                SENDFILE: while ($bytes_to_write > 0) {
+                    my $c = syssendfile($socket, $read_fh, $block_size);
+                    if ($c > 0) {
                         $last_written_point += $c;
+                        $bytes_to_write     -= $c;
+                    }
+                    elsif ($c == -1 && $block_size > 1024*1024) {
+                        # 32 bit kernels won't even allow you to send more than 2Gb, it seems.
+                        # Retry with a smaller block size.
+                        $block_size = 1024*1024;
                     }
                     else {
                         $fail_write_attempt->($_);
                         warn "syssendfile failed, only $c out of $bytes_to_write written: $!";
+                        last SENDFILE;
                     }
                 }
-                elsif ($bytes_to_write < 0) {
+
+                if ($bytes_to_write < 0) {
                     die "unpossible!";
                 }
             }
@@ -219,7 +229,19 @@ sub store_file_from_fh {
 
                 $self->run_hook('new_file_end', $self, $key, $class, $opts);
 
-                my $buf = slurp($socket);
+                my $buf;
+                try {
+                    $buf = slurp($socket);
+                }
+                catch {
+                    warn $_;
+                };
+
+                if (!defined($buf)) {
+                    $fail_write_attempt->("slurp failed");
+                    next;
+                }
+
                 setsockopt($socket, IPPROTO_TCP, TCP_CORK, 0) or warn "could not unset TCP_CORK" if TCP_CORK;
                 unless(close($socket)) {
                     $fail_write_attempt->($!);
@@ -233,18 +255,43 @@ sub store_file_from_fh {
 
                     $opts->{on_http_done}->() if $opts->{http_done};
 
-                    try {
-                        # XXX - What's the timeout here.
-                        my $probe_length = (head($current_dest->{path}))[1];
-                        die "probe failed: $probe_length vs $eventual_length" if $probe_length != $eventual_length;
-                    }
-                    catch {
-                        $fail_write_attempt->("HEAD check on newly written file failed: $_");
-                        next;
-                    };
+                    my @cs;
 
+                    if (!$checksum) {
+                        try {
+                            # XXX - What's the timeout here.
+                            my $probe_length = (head($current_dest->{path}))[1];
+                            die "probe failed: $probe_length vs $eventual_length" if $probe_length != $eventual_length;
+                        }
+                        catch {
+                            $fail_write_attempt->("HEAD check on newly written file failed: $_");
+                        };
+                        # No checksum to supply, but we have at least checked the length.
+                    }
+                    elsif ($checksum && $create_close_timed_out) {
+                        try {
+                            my $md5 = Digest::MD5->new();
+                            my $req = HTTP::Request->new(GET => $current_dest->{path});
+                            LWP::UserAgent->new->request($req, sub { $md5->add($_[0]) });
+
+                            my $hex_checked = $md5->hexdigest();
+                            die "Got $hex_checked, expected $checksum" if "MD5:$hex_checked" ne $checksum;
+                        }
+                        catch {
+                            $fail_write_attempt->("Cross network checksum failed: $_");
+                        };
+                        @cs = ( checksum => $checksum, checksumverify => 0 );
+                    }
+                    else {
+                        @cs = ( checksum => $checksum, checksumverify => 1 );
+                    }
+
+                    if (defined $last_error) {
+                        next;
+                    }
 
                     my $rv;
+                    my $ts_sent_create_close = [gettimeofday];
                     try {
                         $rv = $self->{backend}->do_request
                             ("create_close", {
@@ -254,14 +301,12 @@ sub store_file_from_fh {
                                 size   => $eventual_length,
                                 key    => $key,
                                 path   => $current_dest->{path},
-                                $checksum ? (
-                                    checksum => $checksum,
-                                    checksumverify => 1,
-                                ) : (),
+                                @cs,
                             });
                     }
                     catch {
                         warn "create_close exploded: $_";
+                        $self->{backend}->force_disconnect() if $self->{backend}->can('force_disconnect');
                     };
 
                     # TODO we used to have a file check to query the size of the
@@ -270,6 +315,11 @@ sub store_file_from_fh {
                     if ($rv) {
                         $self->run_hook('store_file_end', $self, $key, $class, $opts);
                         return $eventual_length;
+                    }
+                    elsif ($checksum && tv_interval($ts_sent_create_close) >= $self->{backend}->{timeout}) {
+                        @dests = ();
+                        $fail_write_attempt->("create_close failed, possibly timed out checksumming");
+                        $create_close_timed_out = 1;
                     }
                     else {
                         # create_close may explode due to a back checksum,
