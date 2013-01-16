@@ -30,17 +30,23 @@ MogileFS::Client::CallbackFile
     my $eventual_length = -s $read_fh;
     my $f = $mogfs->store_file_from_fh($key, $class, $read_fh, $eventual_length, \%opts);
 
-    $f->($eventual_length, 0);
+    $f->($eventual_length, 0); # upload entire file
 
-    $f->("", 1); # indicate EOF
+    $f->($eventual_length, 1); # indicate EOF
 
 =head1 DESCRIPTION
 
 This package inherits from L<MogileFS::Client::Async> and provides an additional
 blocking API in which the data you wish to upload is read from a file when
-commanded by a callback function.
-function, allowing other processing to take place on data as you read it from
-disc or elsewhere.
+commanded by a callback function.  This allows other processing to take place on
+data as you read it from disc or elsewhere.
+
+The trackers, and storage backends, are tried repeatedly until the file is
+successfully stored, or an error is thrown.
+
+The C<$key> parameter may be a closure.  In this case, it is called every time
+before C<create_open> is called, allowing a different key to be used if an
+upload fails, allowing for additional paranoia.
 
 =head1 SEE ALSO
 
@@ -145,7 +151,7 @@ sub store_file_from_fh {
 
         my $fail_write_attempt = sub {
             my ($msg) = @_;
-            $last_error = $msg;
+            $last_error = $msg || "unknown error";
 
             if ($opts->{on_failure}) {
                 $opts->{on_failure}->({
@@ -316,10 +322,10 @@ sub store_file_from_fh {
                         $self->run_hook('store_file_end', $self, $key, $class, $opts);
                         return $eventual_length;
                     }
-                    elsif ($checksum && tv_interval($ts_sent_create_close) >= $self->{backend}->{timeout}) {
+                    elsif (!$create_close_timed_out && $checksum && tv_interval($ts_sent_create_close) >= $self->{backend}->{timeout}) {
                         @dests = ();
-                        $fail_write_attempt->("create_close failed, possibly timed out checksumming");
                         $create_close_timed_out = 1;
+                        $fail_write_attempt->("create_close failed, possibly timed out checksumming");
                     }
                     else {
                         # create_close may explode due to a back checksum,
@@ -332,12 +338,11 @@ sub store_file_from_fh {
                     }
                 }
                 else {
-                    $self->fail_write_attempt("Got non-200 from remote server $top");
+                    $fail_write_attempt->("Got non-200 from remote server $top");
                     next;
                 }
             }
-
-            if ($last_written_point == $available_to_read) {
+            elsif ($last_written_point == $available_to_read) {
                 return;
             }
         }
