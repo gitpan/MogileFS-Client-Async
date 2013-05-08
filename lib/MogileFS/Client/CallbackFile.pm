@@ -230,6 +230,8 @@ sub store_file_from_fh {
             }
 
             if ($socket && $eof) {
+                setsockopt($socket, IPPROTO_TCP, TCP_CORK, 0) or warn "could not unset TCP_CORK: $!" if TCP_CORK;
+                shutdown($socket, 1) or warn "could not shutdown socket: $!";
                 die "File is longer than initially declared, is it still being written to? We are at $last_written_point, $eventual_length initially declared" if ($last_written_point > $eventual_length);
                 die "Cannot be at eof, only $last_written_point out of $eventual_length written!" unless ($last_written_point == $eventual_length);
 
@@ -248,7 +250,6 @@ sub store_file_from_fh {
                     next;
                 }
 
-                setsockopt($socket, IPPROTO_TCP, TCP_CORK, 0) or warn "could not unset TCP_CORK" if TCP_CORK;
                 unless(close($socket)) {
                     $fail_write_attempt->($!);
                     warn "could not close socket: $!";
@@ -349,6 +350,34 @@ sub store_file_from_fh {
 
         die "Mogile write failed: $last_error";
     };
+}
+
+sub store_file {
+    my ($self, $key, $class, $fn, $opts) = @_;
+
+    if (ref($fn) ne 'SCALAR') {
+        warn "not scalar!";
+        return $self->SUPER::store_file($key, $class, $fn, $opts);
+    }
+
+    open(my $fh, "<", $fn) or die "could not open '$fn': $!";
+
+    my $file_length = -s $fh;
+
+    my $cb = $self->store_file_from_fh(
+        $key, $class, $fh, $file_length, $opts
+    );
+
+    open(my $checksum, "-|", "md5sum", "-b", "--", $fn) or die "could not fork off md5sum: $!";
+    $cb->($file_length, 0);
+    my $line = <$checksum>;
+    close($checksum) or die "could not finish checksum: $!";
+
+    $checksum =~ /^([0-9a-f]{32})/ or die "could not find checksum";
+
+    $cb->($file_length, 1, $1);
+
+    return $file_length;
 }
 
 1;
