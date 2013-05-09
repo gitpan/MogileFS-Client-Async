@@ -355,7 +355,7 @@ sub store_file_from_fh {
 sub store_file {
     my ($self, $key, $class, $fn, $opts) = @_;
 
-    if (ref($fn) ne 'SCALAR') {
+    if (ref($fn)) {
         warn "not scalar!";
         return $self->SUPER::store_file($key, $class, $fn, $opts);
     }
@@ -373,9 +373,9 @@ sub store_file {
     my $line = <$checksum>;
     close($checksum) or die "could not finish checksum: $!";
 
-    $checksum =~ /^([0-9a-f]{32})/ or die "could not find checksum";
+    $line =~ /^([0-9a-f]{32})/ or die "could not find checksum";
 
-    $cb->($file_length, 1, $1);
+    $cb->($file_length, 1, "MD5:$1");
 
     return $file_length;
 }
